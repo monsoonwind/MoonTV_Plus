@@ -50,6 +50,7 @@ import Toast, { ToastProps } from '@/components/Toast';
 import AIChatPanel from '@/components/AIChatPanel';
 import { useEnableComments } from '@/hooks/useEnableComments';
 import PansouSearch from '@/components/PansouSearch';
+import CustomHeatmap from '@/components/CustomHeatmap';
 
 // 扩展 HTMLVideoElement 类型以支持 hls 属性
 declare global {
@@ -2834,17 +2835,6 @@ function PlayPageClient() {
       setDanmakuCount(0);
     } finally {
       setDanmakuLoading(false);
-
-      // 弹幕加载完成后，根据用户设置显示或隐藏热力图（仅在未禁用热力图时）
-      if (!danmakuHeatmapDisabledRef.current) {
-        const heatmapElement = document.querySelector('.art-control-heatmap') as HTMLElement;
-        if (heatmapElement) {
-          const isEnabled = danmakuHeatmapEnabledRef.current;
-          heatmapElement.style.opacity = isEnabled ? '1' : '0';
-          heatmapElement.style.pointerEvents = isEnabled ? 'auto' : 'none';
-          console.log('弹幕加载完成，热力图状态:', isEnabled ? '显示' : '隐藏');
-        }
-      }
     }
   };
 
@@ -3700,7 +3690,7 @@ function PlayPageClient() {
             antiOverlap: true,
             synchronousPlayback: danmakuSettingsRef.current.synchronousPlayback,
             emitter: false,
-            heatmap: !danmakuHeatmapDisabledRef.current, // 根据禁用状态决定是否创建热力图
+            heatmap: false, // 禁用 artplayer 自带热力图，使用自定义热力图
             // 主题
             theme: 'dark',
             filter: (danmu: any) => {
@@ -3781,8 +3771,8 @@ function PlayPageClient() {
               return '打开设置';
             },
           },
-          // 只有在未禁用热力图时才显示热力图开关
-          ...(!danmakuHeatmapDisabledRef.current ? [{
+          // 热力图开关（始终显示，不再依赖 danmakuHeatmapDisabled）
+          {
             name: '弹幕热力',
             html: '弹幕热力',
             icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z" fill="#ffffff"/></svg>',
@@ -3792,22 +3782,13 @@ function PlayPageClient() {
               try {
                 localStorage.setItem('danmaku_heatmap_enabled', String(newVal));
                 setDanmakuHeatmapEnabled(newVal);
-
-                // 使用 opacity 控制热力图显示/隐藏
-                const heatmapElement = document.querySelector('.art-control-heatmap') as HTMLElement;
-                if (heatmapElement) {
-                  heatmapElement.style.opacity = newVal ? '1' : '0';
-                  heatmapElement.style.pointerEvents = newVal ? 'auto' : 'none';
-                  console.log('弹幕热力已', newVal ? '开启' : '关闭');
-                } else {
-                  console.warn('未找到热力图元素');
-                }
+                console.log('弹幕热力已', newVal ? '开启' : '关闭');
               } catch (err) {
                 console.error('切换弹幕热力失败:', err);
               }
               return newVal;
             },
-          }] : []),
+          },
           ...(webGPUSupported ? [
             {
               name: 'Anime4K超分',
@@ -4609,16 +4590,6 @@ function PlayPageClient() {
             danmakuPluginRef.current.hide();
           }
 
-          // 初始隐藏热力图，等待弹幕加载完成后再显示（仅在未禁用热力图时）
-          if (!danmakuHeatmapDisabledRef.current) {
-            const heatmapElement = document.querySelector('.art-control-heatmap') as HTMLElement;
-            if (heatmapElement) {
-              heatmapElement.style.opacity = '0';
-              heatmapElement.style.pointerEvents = 'none';
-              console.log('热力图初始状态: 隐藏（等待弹幕加载）');
-            }
-          }
-
           // 自动搜索并加载弹幕
           await autoSearchDanmaku();
         }
@@ -4660,6 +4631,339 @@ function PlayPageClient() {
         console.log('网页全屏状态变化:', isFullscreen);
         setIsWebFullscreen(isFullscreen);
       });
+
+      // 添加自定义热力图到播放器控制层
+      if (!danmakuHeatmapDisabledRef.current) {
+        artPlayerRef.current.controls.add({
+          name: 'custom-heatmap',
+          position: 'top',
+          html: '<canvas id="custom-heatmap-canvas" style="width: 100%; height: 100%; display: block;"></canvas>',
+          style: {
+            position: 'absolute',
+            bottom: '16px',
+            left: '10px',
+            right: '10px',
+            height: '30px',
+            pointerEvents: 'none',
+            zIndex: '30',
+            display: danmakuHeatmapEnabledRef.current ? 'block' : 'none',
+          },
+          mounted: ($el: HTMLElement) => {
+            // 动态获取进度条的实际位置并调整热力图
+            const adjustHeatmapPosition = () => {
+              // 尝试查找进度条的内部元素
+              const progressInner = document.querySelector('.art-control-progress-inner') as HTMLElement;
+              const progressBar = progressInner || document.querySelector('.art-control-progress') as HTMLElement;
+
+              if (progressBar) {
+                const rect = progressBar.getBoundingClientRect();
+                const parentRect = $el.parentElement?.getBoundingClientRect();
+                if (parentRect) {
+                  const leftOffset = rect.left - parentRect.left;
+
+                  // 调整热力图位置以匹配进度条
+                  $el.style.left = `${leftOffset}px`;
+                  $el.style.right = 'auto';
+                  $el.style.width = `${rect.width}px`;
+                }
+              }
+            };
+
+            // 初始调整
+            setTimeout(adjustHeatmapPosition, 500);
+
+            // 监听进度条尺寸变化
+            const progressBar = document.querySelector('.art-control-progress') as HTMLElement;
+            let progressResizeObserver: ResizeObserver | null = null;
+            if (progressBar && typeof ResizeObserver !== 'undefined') {
+              progressResizeObserver = new ResizeObserver(() => {
+                adjustHeatmapPosition();
+                // 进度条长度变化时也需要重新计算和绘制热力图
+                setTimeout(updateHeatmapData, 100);
+              });
+              progressResizeObserver.observe(progressBar);
+            }
+
+            // 监听全屏状态变化
+            if (artPlayerRef.current) {
+              artPlayerRef.current.on('fullscreen', () => {
+                setTimeout(adjustHeatmapPosition, 300);
+              });
+
+              artPlayerRef.current.on('fullscreenWeb', () => {
+                setTimeout(adjustHeatmapPosition, 300);
+              });
+            }
+
+            // 监听窗口大小变化
+            const resizeHandler = () => {
+              adjustHeatmapPosition();
+            };
+            window.addEventListener('resize', resizeHandler);
+
+            const canvas = $el.querySelector('#custom-heatmap-canvas') as HTMLCanvasElement;
+            if (!canvas) {
+              return;
+            }
+
+            canvas.width = 1000;
+            canvas.height = 30;
+
+            let heatmapData: number[] = [];
+            let isHovering = false;
+            let hoverTime = 0;
+            let tooltipEl: HTMLElement | null = null;
+
+            // 监听热力图开关状态变化
+            const updateVisibility = () => {
+              const enabled = localStorage.getItem('danmaku_heatmap_enabled');
+              $el.style.display = enabled === 'true' ? 'block' : 'none';
+            };
+
+            // 定期检查开关状态
+            const visibilityInterval = setInterval(updateVisibility, 500);
+
+            // 计算热力图数据（按视频长度的5%分段，使热力图更平滑）
+            const calculateHeatmapData = (danmakuList: any[], duration: number) => {
+              if (!duration || duration <= 0 || danmakuList.length === 0) {
+                return [];
+              }
+
+              // 按视频长度的5%分段，最少20段
+              const segments = Math.max(20, Math.ceil(duration * 0.05));
+              const segmentDuration = duration / segments;
+              const heatData = new Array(segments).fill(0);
+
+              danmakuList.forEach((danmaku: any) => {
+                const segmentIndex = Math.floor(danmaku.time / segmentDuration);
+                if (segmentIndex >= 0 && segmentIndex < segments) {
+                  heatData[segmentIndex]++;
+                }
+              });
+
+              const maxCount = Math.max(...heatData, 1);
+              return heatData.map((count: number) => count / maxCount);
+            };
+
+            // 绘制热力图
+            const drawHeatmap = () => {
+              if (!artPlayerRef.current || heatmapData.length === 0) return;
+
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return;
+
+              const width = canvas.width;
+              const height = canvas.height;
+              const duration = artPlayerRef.current.duration || 0;
+              const currentTime = artPlayerRef.current.currentTime || 0;
+
+              ctx.clearRect(0, 0, width, height);
+
+              const progressRatio = duration > 0 ? currentTime / duration : 0;
+              const progressX = progressRatio * width;
+
+              // 绘制未播放部分的曲线
+              ctx.beginPath();
+              ctx.moveTo(0, height);
+
+              heatmapData.forEach((value: number, index: number) => {
+                const x = (index / heatmapData.length) * width;
+                const y = height - (value * height);
+
+                if (index === 0) {
+                  ctx.lineTo(x, y);
+                } else {
+                  // 使用二次贝塞尔曲线使线条平滑
+                  const prevX = ((index - 1) / heatmapData.length) * width;
+                  const prevY = height - (heatmapData[index - 1] * height);
+                  const cpX = (prevX + x) / 2;
+                  const cpY = (prevY + y) / 2;
+                  ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+                  ctx.lineTo(x, y);
+                }
+              });
+
+              ctx.lineTo(width, height);
+              ctx.closePath();
+              ctx.fillStyle = 'rgba(128, 128, 128, 0.3)';
+              ctx.fill();
+
+              // 绘制已播放部分的曲线（深色）
+              if (progressRatio > 0) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, 0, progressX, height);
+                ctx.clip();
+
+                ctx.beginPath();
+                ctx.moveTo(0, height);
+
+                heatmapData.forEach((value: number, index: number) => {
+                  const x = (index / heatmapData.length) * width;
+                  const y = height - (value * height);
+
+                  if (index === 0) {
+                    ctx.lineTo(x, y);
+                  } else {
+                    const prevX = ((index - 1) / heatmapData.length) * width;
+                    const prevY = height - (heatmapData[index - 1] * height);
+                    const cpX = (prevX + x) / 2;
+                    const cpY = (prevY + y) / 2;
+                    ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+                    ctx.lineTo(x, y);
+                  }
+                });
+
+                ctx.lineTo(width, height);
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(128, 128, 128, 0.6)';
+                ctx.fill();
+
+                ctx.restore();
+              }
+            };
+
+            // 格式化时间
+            const formatTime = (seconds: number): string => {
+              const h = Math.floor(seconds / 3600);
+              const m = Math.floor((seconds % 3600) / 60);
+              const s = Math.floor(seconds % 60);
+
+              if (h > 0) {
+                return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+              }
+              return `${m}:${s.toString().padStart(2, '0')}`;
+            };
+
+            // 获取弹幕密度
+            const getDensity = (time: number): string => {
+              if (heatmapData.length === 0 || !artPlayerRef.current) return '';
+              const duration = artPlayerRef.current.duration || 0;
+              if (duration <= 0) return '';
+
+              // 按视频长度的5%分段
+              const segments = Math.max(20, Math.ceil(duration * 0.05));
+              const segmentDuration = duration / segments;
+              const segmentIndex = Math.floor(time / segmentDuration);
+
+              if (segmentIndex >= 0 && segmentIndex < heatmapData.length) {
+                const density = heatmapData[segmentIndex];
+                if (density < 0.2) return '低';
+                if (density < 0.5) return '中';
+                if (density < 0.8) return '高';
+                return '极高';
+              }
+              return '';
+            };
+
+            // 鼠标移动事件
+            canvas.addEventListener('mousemove', (e: MouseEvent) => {
+              if (!artPlayerRef.current) return;
+
+              const rect = canvas.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const percentage = x / rect.width;
+              const duration = artPlayerRef.current.duration || 0;
+              hoverTime = percentage * duration;
+              isHovering = true;
+
+              // 创建或更新提示框
+              if (!tooltipEl) {
+                tooltipEl = document.createElement('div');
+                tooltipEl.style.cssText = `
+                  position: absolute;
+                  bottom: 100%;
+                  transform: translateX(-50%);
+                  margin-bottom: 8px;
+                  padding: 4px 8px;
+                  background: rgba(0, 0, 0, 0.8);
+                  color: white;
+                  font-size: 12px;
+                  border-radius: 4px;
+                  white-space: nowrap;
+                  pointer-events: none;
+                  z-index: 30;
+                `;
+                $el.appendChild(tooltipEl);
+              }
+
+              tooltipEl.textContent = `${formatTime(hoverTime)} - 弹幕密度: ${getDensity(hoverTime)}`;
+              tooltipEl.style.left = `${percentage * 100}%`;
+              tooltipEl.style.display = 'block';
+            });
+
+            // 鼠标离开事件
+            canvas.addEventListener('mouseleave', () => {
+              isHovering = false;
+              if (tooltipEl) {
+                tooltipEl.style.display = 'none';
+              }
+            });
+
+            // 点击跳转
+            canvas.addEventListener('click', (e: MouseEvent) => {
+              if (!artPlayerRef.current) return;
+
+              const rect = canvas.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const percentage = x / rect.width;
+              const duration = artPlayerRef.current.duration || 0;
+              const time = percentage * duration;
+
+              artPlayerRef.current.currentTime = time;
+            });
+
+            // 监听时间更新
+            artPlayerRef.current.on('video:timeupdate', drawHeatmap);
+
+            // 监听弹幕数据更新
+            const updateHeatmapData = () => {
+              if (!artPlayerRef.current || !danmakuPluginRef.current) return;
+              const duration = artPlayerRef.current.duration || 0;
+
+              // 直接从弹幕插件获取弹幕数据
+              const danmakuList = danmakuPluginRef.current.option?.danmuku || [];
+
+              if (danmakuList.length > 0 && duration > 0) {
+                heatmapData = calculateHeatmapData(danmakuList, duration);
+                // 立即绘制热力图
+                drawHeatmap();
+                // 强制再次绘制，确保显示
+                setTimeout(drawHeatmap, 100);
+              }
+            };
+
+            artPlayerRef.current.on('video:loadedmetadata', updateHeatmapData);
+
+            // 监听弹幕插件的配置变化
+            if (danmakuPluginRef.current) {
+              const originalConfig = danmakuPluginRef.current.config;
+              danmakuPluginRef.current.config = function(...args: any[]) {
+                const result = originalConfig.apply(this, args);
+                setTimeout(updateHeatmapData, 100);
+                return result;
+              };
+            }
+
+            // 初始尝试加载
+            setTimeout(updateHeatmapData, 500);
+            setTimeout(updateHeatmapData, 1500);
+            setTimeout(updateHeatmapData, 3000);
+
+            // 清理
+            return () => {
+              clearInterval(visibilityInterval);
+              window.removeEventListener('resize', resizeHandler);
+              if (progressResizeObserver) {
+                progressResizeObserver.disconnect();
+              }
+              if (tooltipEl && tooltipEl.parentNode) {
+                tooltipEl.parentNode.removeChild(tooltipEl);
+              }
+            };
+          },
+        });
+      }
 
       // 添加全屏快进快退按钮
       artPlayerRef.current.layers.add({
@@ -5501,7 +5805,6 @@ function PlayPageClient() {
                   </div>
                 )}
 
-                
               </div>
 
               {/* 第三方应用打开按钮 - 观影室同步状态下隐藏 */}
