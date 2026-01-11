@@ -49,6 +49,7 @@ interface CorrectDialogProps {
     seasonName?: string;
   };
   onCorrect: () => void;
+  source?: string; // 新增：视频源类型（xiaoya, openlist等）
 }
 
 export default function CorrectDialog({
@@ -58,6 +59,7 @@ export default function CorrectDialog({
   currentTitle,
   currentVideo,
   onCorrect,
+  source = 'openlist', // 默认为 openlist
 }: CorrectDialogProps) {
   const [searchQuery, setSearchQuery] = useState(currentTitle);
   const [searching, setSearching] = useState(false);
@@ -229,8 +231,7 @@ export default function CorrectDialog({
         finalTitle = `${finalTitle} ${season.name}`;
       }
 
-      const body: any = {
-        key: videoKey,
+      const correctionData: any = {
         tmdbId: finalTmdbId,
         title: finalTitle,
         posterPath: season?.poster_path || result.poster_path,
@@ -240,20 +241,38 @@ export default function CorrectDialog({
         mediaType: result.media_type,
       };
 
-      // 如果有季度信息，添加到请求中
+      // 如果有季度信息，添加到数据中
       if (season) {
-        body.seasonNumber = season.season_number;
-        body.seasonName = season.name;
+        correctionData.seasonNumber = season.season_number;
+        correctionData.seasonName = season.name;
       }
 
-      const response = await fetch('/api/openlist/correct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      // 根据源类型选择不同的存储方式
+      if (source === 'xiaoya') {
+        // 小雅源：存储到 localStorage
+        const storageKey = `xiaoya_correction_${videoKey}`;
+        const correctionInfo = {
+          ...correctionData,
+          correctedAt: Date.now(),
+        };
+        localStorage.setItem(storageKey, JSON.stringify(correctionInfo));
+        console.log('小雅源纠错信息已存储到 localStorage:', storageKey, correctionInfo);
+      } else {
+        // openlist 等其他源：调用 API
+        const body: any = {
+          key: videoKey,
+          ...correctionData,
+        };
 
-      if (!response.ok) {
-        throw new Error('纠错失败');
+        const response = await fetch('/api/openlist/correct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          throw new Error('纠错失败');
+        }
       }
 
       onCorrect();
@@ -313,8 +332,7 @@ export default function CorrectDialog({
     setError('');
 
     try {
-      const body: any = {
-        key: videoKey,
+      const correctionData: any = {
         title: manualData.title.trim(),
         posterPath: manualData.posterPath.trim() || null,
         releaseDate: manualData.releaseDate.trim() || '',
@@ -325,28 +343,46 @@ export default function CorrectDialog({
 
       // 添加 TMDB ID（如果提供）
       if (manualData.tmdbId.trim()) {
-        body.tmdbId = Number(manualData.tmdbId);
+        correctionData.tmdbId = Number(manualData.tmdbId);
       }
 
       // 添加豆瓣 ID（如果提供）
       if (manualData.doubanId.trim()) {
-        body.doubanId = manualData.doubanId.trim();
+        correctionData.doubanId = manualData.doubanId.trim();
       }
 
       // 如果是电视剧且有季度信息
       if (manualData.mediaType === 'tv' && manualData.seasonNumber) {
-        body.seasonNumber = Number(manualData.seasonNumber);
-        body.seasonName = manualData.seasonName.trim() || `第 ${manualData.seasonNumber} 季`;
+        correctionData.seasonNumber = Number(manualData.seasonNumber);
+        correctionData.seasonName = manualData.seasonName.trim() || `第 ${manualData.seasonNumber} 季`;
       }
 
-      const response = await fetch('/api/openlist/correct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      // 根据源类型选择不同的存储方式
+      if (source === 'xiaoya') {
+        // 小雅源：存储到 localStorage
+        const storageKey = `xiaoya_correction_${videoKey}`;
+        const correctionInfo = {
+          ...correctionData,
+          correctedAt: Date.now(),
+        };
+        localStorage.setItem(storageKey, JSON.stringify(correctionInfo));
+        console.log('小雅源纠错信息已存储到 localStorage:', storageKey, correctionInfo);
+      } else {
+        // openlist 等其他源：调用 API
+        const body: any = {
+          key: videoKey,
+          ...correctionData,
+        };
 
-      if (!response.ok) {
-        throw new Error('纠错失败');
+        const response = await fetch('/api/openlist/correct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          throw new Error('纠错失败');
+        }
       }
 
       onCorrect();

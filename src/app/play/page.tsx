@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Heart, Search, X, Cloud, Sparkles } from 'lucide-react';
+import { Heart, Search, X, Cloud, Sparkles, AlertCircle } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
@@ -51,6 +51,7 @@ import {
 import type { DanmakuAnime, DanmakuSelection, DanmakuSettings, DanmakuComment } from '@/lib/danmaku/types';
 import { SearchResult, DanmakuFilterConfig, EpisodeFilterConfig } from '@/lib/types';
 import { getVideoResolutionFromM3u8, processImageUrl } from '@/lib/utils';
+import { getTMDBImageUrl } from '@/lib/tmdb.search';
 
 import EpisodeSelector from '@/components/EpisodeSelector';
 import DownloadEpisodeSelector from '@/components/DownloadEpisodeSelector';
@@ -63,6 +64,7 @@ import AIChatPanel from '@/components/AIChatPanel';
 import { useEnableComments } from '@/hooks/useEnableComments';
 import PansouSearch from '@/components/PansouSearch';
 import CustomHeatmap from '@/components/CustomHeatmap';
+import CorrectDialog from '@/components/CorrectDialog';
 
 // 扩展 HTMLVideoElement 类型以支持 hls 属性
 declare global {
@@ -121,6 +123,9 @@ function PlayPageClient() {
   const [showAIChat, setShowAIChat] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiDefaultMessageWithVideo, setAiDefaultMessageWithVideo] = useState('');
+
+  // 纠错弹窗状态
+  const [showCorrectDialog, setShowCorrectDialog] = useState(false);
 
   // 检查AI功能是否启用
   useEffect(() => {
@@ -2624,10 +2629,22 @@ function PlayPageClient() {
       // 直接使用 detailData.source（已经是完整格式）
       setCurrentSource(detailData.source);
       setCurrentId(detailData.id);
+
+      // 如果是小雅源，检查并应用纠错信息
+      if (detailData.source === 'xiaoya') {
+        const correction = getXiaoyaCorrection(detailData.source, detailData.id);
+        if (correction) {
+          console.log('发现小雅源纠错信息，正在应用...', correction);
+          detailData = applyCorrection(detailData, correction);
+        }
+      }
+
+      // 更新所有相关状态（在应用纠错信息之后）
       setVideoYear(detailData.year);
       setVideoTitle(detailData.title || videoTitleRef.current);
       setVideoCover(detailData.poster);
       setVideoDoubanId(detailData.douban_id || 0);
+
       setDetail(detailData);
       setSourceProxyMode(detailData.proxyMode || false); // 从 detail 数据中读取代理模式
       if (currentEpisodeIndex >= detailData.episodes.length) {
@@ -3899,6 +3916,40 @@ function PlayPageClient() {
       }
     } catch (err) {
       console.error('切换收藏失败:', err);
+    }
+  };
+
+  // 纠错成功后的回调
+  const handleCorrectSuccess = () => {
+    if (!detail || detail.source !== 'xiaoya') return;
+
+    // 从 localStorage 读取纠错信息
+    const correction = getXiaoyaCorrection(detail.source, detail.id);
+    if (correction) {
+      console.log('应用纠错信息:', correction);
+
+      // 只更新显示相关的状态，不更新 detail（避免触发播放器刷新）
+      if (correction.title) {
+        setVideoTitle(correction.title);
+      }
+      if (correction.posterPath) {
+        // 补全 TMDB 图片 URL
+        const fullPosterUrl = getTMDBImageUrl(correction.posterPath);
+        setVideoCover(fullPosterUrl);
+      }
+      if (correction.doubanId) {
+        const doubanIdNum = typeof correction.doubanId === 'string'
+          ? parseInt(correction.doubanId, 10)
+          : correction.doubanId;
+        setVideoDoubanId(doubanIdNum);
+      }
+
+      // 更新 detailRef，这样其他地方使用 detailRef 时能获取到最新信息
+      if (detailRef.current) {
+        detailRef.current = applyCorrection(detailRef.current, correction);
+      }
+
+      console.log('已应用纠错信息（页面刷新后将完全生效）');
     }
   };
 
@@ -6866,6 +6917,19 @@ function PlayPageClient() {
                     <Sparkles className='h-6 w-6 text-gray-700 dark:text-gray-300' />
                   </button>
                 )}
+                {/* 纠错按钮 - 仅小雅源显示 */}
+                {detail && detail.source === 'xiaoya' && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowCorrectDialog(true);
+                    }}
+                    className='flex-shrink-0 hover:opacity-80 transition-opacity'
+                    title='纠错'
+                  >
+                    <AlertCircle className='h-6 w-6 text-gray-700 dark:text-gray-300' />
+                  </button>
+                )}
                 {/* 豆瓣评分显示 */}
                 {doubanRating && doubanRating.value > 0 && (
                   <div className='flex items-center gap-2 text-base font-normal'>
@@ -7140,9 +7204,62 @@ function PlayPageClient() {
           welcomeMessage={aiDefaultMessageWithVideo ? aiDefaultMessageWithVideo.replace('{title}', detail.title || '') : `想了解《${detail.title}》的更多信息吗？我可以帮你查询剧情、演员、评价等。`}
         />
       )}
+
+      {/* 纠错弹窗 - 仅小雅源显示 */}
+      {detail && detail.source === 'xiaoya' && (
+        <CorrectDialog
+          isOpen={showCorrectDialog}
+          onClose={() => setShowCorrectDialog(false)}
+          videoKey={`${detail.source}_${detail.id}`}
+          currentTitle={detail.title}
+          currentVideo={{
+            tmdbId: detail.tmdb_id,
+            doubanId: detail.douban_id ? String(detail.douban_id) : undefined,
+            poster: detail.poster,
+            releaseDate: detail.year,
+            overview: detail.desc,
+            voteAverage: detail.rating,
+            mediaType: detail.type_name === '电影' ? 'movie' : 'tv',
+          }}
+          source="xiaoya"
+          onCorrect={() => {
+            // 纠错成功后的回调
+            handleCorrectSuccess();
+          }}
+        />
+      )}
     </PageLayout>
   );
 }
+
+// 从 localStorage 读取小雅源的纠错信息
+const getXiaoyaCorrection = (source: string, id: string) => {
+  try {
+    const storageKey = `xiaoya_correction_${source}_${id}`;
+    const correctionJson = localStorage.getItem(storageKey);
+    if (correctionJson) {
+      return JSON.parse(correctionJson);
+    }
+  } catch (error) {
+    console.error('读取纠错信息失败:', error);
+  }
+  return null;
+};
+
+// 应用纠错信息到 detail 对象
+const applyCorrection = (detail: SearchResult, correction: any): SearchResult => {
+  return {
+    ...detail,
+    title: correction.title || detail.title,
+    poster: correction.posterPath ? getTMDBImageUrl(correction.posterPath) : detail.poster,
+    year: correction.releaseDate || detail.year,
+    desc: correction.overview || detail.desc,
+    rating: correction.voteAverage || detail.rating,
+    tmdb_id: correction.tmdbId || detail.tmdb_id,
+    douban_id: correction.doubanId ? (typeof correction.doubanId === 'string' ? parseInt(correction.doubanId, 10) : correction.doubanId) : detail.douban_id,
+    type_name: correction.mediaType === 'movie' ? '电影' : (correction.mediaType === 'tv' ? '电视剧' : detail.type_name),
+  };
+};
 
 // FavoriteIcon 组件
 const FavoriteIcon = ({ filled }: { filled: boolean }) => {

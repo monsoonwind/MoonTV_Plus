@@ -137,6 +137,8 @@ export interface SearchResult {
   vod_total?: number; // 总集数
   proxyMode?: boolean; // 代理模式：启用后由服务器代理m3u8和ts分片
   subtitles?: Array<Array<{ label: string; url: string }>>; // 字幕列表（按集数索引）
+  tmdb_id?: number; // TMDB ID
+  rating?: number; // 评分
 }
 
 // 豆瓣数据结构
